@@ -1,7 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../AuthContext';
 import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut,
+  RecaptchaVerifier,
+  signInWithPhoneNumber
+} from 'firebase/auth';
 import { 
   collection, 
   query, 
@@ -30,7 +36,10 @@ import {
   AlertCircle,
   Menu,
   X,
-  Users
+  Users,
+  Phone,
+  ArrowRight,
+  ShieldCheck
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -60,6 +69,7 @@ export default function Dashboard() {
   const [currentVideo, setCurrentVideo] = useState<any>(null);
   const [watchTime, setWatchTime] = useState(0);
   const [isWatching, setIsWatching] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const timerRef = useRef<any>(null);
   const [botActivity, setBotActivity] = useState<string[]>([]);
   const [selectedCampaignViewers, setSelectedCampaignViewers] = useState<any[]>([]);
@@ -68,7 +78,15 @@ export default function Dashboard() {
   const [isSubscribing, setIsSubscribing] = useState(false);
   const [currentChannel, setCurrentChannel] = useState<any>(null);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [hasOpenedChannel, setHasOpenedChannel] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
+
+  // Phone Auth State
+  const [loginMethod, setLoginMethod] = useState<'google' | 'phone' | null>(null);
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [otp, setOtp] = useState('');
+  const [confirmationResult, setConfirmationResult] = useState<any>(null);
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
 
   const fetchViewers = async (campaignId: string) => {
     const q = query(
@@ -129,6 +147,47 @@ export default function Dashboard() {
 
     return () => clearInterval(interval);
   }, [user, myCampaigns]);
+
+  // Handle tab switching & visibility
+  useEffect(() => {
+    if (!isWatching) {
+      setIsPaused(false);
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        setIsPaused(true);
+        toast.warning("Timer paused! Return to the app to continue earning.", { 
+          id: 'watch-pause',
+          duration: 5000 
+        });
+      } else {
+        setIsPaused(false);
+        toast.success("Watch timer resumed!", { id: 'watch-pause' });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isWatching]);
+
+  // Unified Timer Logic
+  useEffect(() => {
+    let interval: any;
+    if (isWatching && !isPaused && watchTime > 0) {
+      interval = setInterval(() => {
+        setWatchTime((prev) => {
+          if (prev <= 1) {
+            handleWatchComplete(currentVideo);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isWatching, isPaused, watchTime, currentVideo]);
 
   const [topUsers, setTopUsers] = useState<any[]>([]);
 
@@ -252,23 +311,14 @@ export default function Dashboard() {
     if (campaign.type === 'subscribe') {
       setCurrentChannel(campaign);
       setIsSubscribing(true);
+      setHasOpenedChannel(false);
       return;
     }
 
     setCurrentVideo(campaign);
     setIsWatching(true);
     setWatchTime(60); // 60 seconds watch requirement
-    
-    timerRef.current = setInterval(() => {
-      setWatchTime((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current);
-          handleWatchComplete(campaign);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    setIsPaused(false);
   };
 
   const handleSubscribeComplete = async () => {
@@ -311,6 +361,7 @@ export default function Dashboard() {
         toast.success(`Subscribed! Earned ${reward} Coins`);
         setIsSubscribing(false);
         setCurrentChannel(null);
+        setHasOpenedChannel(false);
       } catch (error) {
         toast.error("Verification failed");
       } finally {
@@ -321,6 +372,12 @@ export default function Dashboard() {
 
   const handleWatchComplete = async (campaign: any) => {
     if (!user || !userData) return;
+    
+    // Safety check: ensure watch time is actually zero
+    if (watchTime > 0) {
+      toast.error("You must watch the full video!");
+      return;
+    }
     
     try {
       // Check if already watched (ViewLog)
@@ -428,25 +485,154 @@ export default function Dashboard() {
     }
   };
 
+  const setupRecaptcha = () => {
+    if ((window as any).recaptchaVerifier) return (window as any).recaptchaVerifier;
+    
+    (window as any).recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+      'size': 'invisible',
+      'callback': (response: any) => {
+        // reCAPTCHA solved, allow signInWithPhoneNumber.
+      }
+    });
+    return (window as any).recaptchaVerifier;
+  };
+
+  const handlePhoneSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!phoneNumber) return;
+
+    // Basic Indian number format check (common for TubeBoost users)
+    const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+91${phoneNumber}`;
+    
+    setIsSendingOtp(true);
+    try {
+      const appVerifier = setupRecaptcha();
+      const confirmation = await signInWithPhoneNumber(auth, formattedPhone, appVerifier);
+      setConfirmationResult(confirmation);
+      toast.success("OTP sent successfully!");
+    } catch (error: any) {
+      console.error(error);
+      toast.error(error.message || "Failed to send OTP");
+      if ((window as any).recaptchaVerifier) {
+        (window as any).recaptchaVerifier.clear();
+        (window as any).recaptchaVerifier = null;
+      }
+    } finally {
+      setIsSendingOtp(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otp || !confirmationResult) return;
+
+    setIsVerifying(true);
+    try {
+      await confirmationResult.confirm(otp);
+      toast.success("Logged in successfully!");
+    } catch (error) {
+      toast.error("Invalid OTP. Try again.");
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
   if (loading) return <div className="flex h-screen items-center justify-center">Loading...</div>;
 
   if (!user) {
     return (
       <div className="flex h-screen flex-col items-center justify-center bg-background p-6 text-center">
-        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md space-y-8">
+        <div id="recaptcha-container"></div>
+        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md w-full space-y-8">
           <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-red-500/10 text-red-500 shadow-inner">
             <Youtube size={48} />
           </div>
           <div className="space-y-3">
             <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight">TubeBoost AI</h1>
             <p className="text-muted-foreground text-base md:text-lg px-4">
-              Boost your YouTube views by joining our community. Watch others and get watched back!
+              Boost your YouTube channel by joining our community.
             </p>
           </div>
-          <Button size="lg" onClick={handleLogin} className="w-full h-14 text-lg gap-3 bg-red-600 hover:bg-red-700 shadow-xl shadow-red-600/20">
-            <Youtube size={24} />
-            Login with Google
-          </Button>
+
+          <AnimatePresence mode="wait">
+            {!loginMethod ? (
+              <motion.div 
+                key="choice"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-3"
+              >
+                <Button size="lg" onClick={handleLogin} className="w-full h-14 text-lg gap-3 bg-red-600 hover:bg-red-700 shadow-xl shadow-red-600/20">
+                  <Youtube size={24} />
+                  Login with Google
+                </Button>
+                <Button size="lg" variant="outline" onClick={() => setLoginMethod('phone')} className="w-full h-14 text-lg gap-3 border-2">
+                  <Phone size={24} />
+                  Login with Phone
+                </Button>
+              </motion.div>
+            ) : loginMethod === 'phone' ? (
+              <motion.div 
+                key="phone-form"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="space-y-4"
+              >
+                {!confirmationResult ? (
+                  <form onSubmit={handlePhoneSignIn} className="space-y-4">
+                    <div className="space-y-2 text-left">
+                      <label className="text-sm font-bold uppercase tracking-widest text-muted-foreground ml-1">Phone Number</label>
+                      <div className="relative">
+                        <Phone className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" size={20} />
+                        <Input 
+                          placeholder="91XXXXXXXX" 
+                          className="h-14 pl-12 rounded-2xl border-2 text-lg focus-visible:ring-red-500"
+                          value={phoneNumber}
+                          onChange={(e) => setPhoneNumber(e.target.value)}
+                          disabled={isSendingOtp}
+                        />
+                      </div>
+                      <p className="text-[10px] text-muted-foreground ml-1">Enter your number with country code (e.g. 91 for India)</p>
+                    </div>
+                    <Button type="submit" size="lg" className="w-full h-14 text-lg gap-2 bg-red-600 font-bold" disabled={isSendingOtp}>
+                      {isSendingOtp ? 'Sending SMS...' : 'Send OTP'}
+                      <ArrowRight size={20} />
+                    </Button>
+                  </form>
+                ) : (
+                  <form onSubmit={handleVerifyOtp} className="space-y-4">
+                    <div className="space-y-2 text-left">
+                      <label className="text-sm font-bold uppercase tracking-widest text-muted-foreground ml-1">Verification Code</label>
+                      <div className="relative">
+                        <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" size={20} />
+                        <Input 
+                          placeholder="6-Digit OTP" 
+                          className="h-14 pl-12 rounded-2xl border-2 text-lg tracking-[0.5em] font-black focus-visible:ring-red-500"
+                          maxLength={6}
+                          value={otp}
+                          onChange={(e) => setOtp(e.target.value)}
+                          disabled={isVerifying}
+                        />
+                      </div>
+                      <p className="text-xs text-center text-muted-foreground">OTP sent to {phoneNumber}</p>
+                    </div>
+                    <Button type="submit" size="lg" className="w-full h-14 text-lg bg-green-600 hover:bg-green-700 font-bold" disabled={isVerifying}>
+                      {isVerifying ? 'Verifying...' : 'Login Now'}
+                    </Button>
+                    <button type="button" onClick={() => setConfirmationResult(null)} className="text-sm text-red-600 font-bold underline">
+                      Change Phone Number
+                    </button>
+                  </form>
+                )}
+                <Button variant="ghost" onClick={() => setLoginMethod(null)} className="text-muted-foreground">
+                  Go Back
+                </Button>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+
           <div className="pt-4 flex items-center justify-center gap-6 text-muted-foreground grayscale opacity-60">
             <div className="flex flex-col items-center gap-1">
               <Users size={20} />
@@ -599,62 +785,162 @@ export default function Dashboard() {
                 </div>
 
                 {isWatching && currentVideo ? (
-                  <Card className="overflow-hidden border-2 border-red-500">
+                  <Card className="overflow-hidden border-2 border-red-500 shadow-2xl">
                     <div className="aspect-video bg-black relative">
+                      {isPaused && (
+                        <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center z-10 backdrop-blur-sm">
+                          <AlertCircle size={48} className="text-yellow-500 mb-2 animate-bounce" />
+                          <h3 className="text-white font-bold text-xl">Timer Paused</h3>
+                          <p className="text-white/80 text-sm">Return to this tab to resume</p>
+                        </div>
+                      )}
                       <iframe
                         width="100%"
                         height="100%"
-                        src={`https://www.youtube.com/embed/${currentVideo.videoId}?autoplay=1&controls=0&disablekb=1&modestbranding=1`}
+                        src={`https://www.youtube.com/embed/${currentVideo.videoId}?autoplay=1&controls=0&disablekb=1&modestbranding=1&rel=0`}
                         title="YouTube video player"
                         frameBorder="0"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                       ></iframe>
-                      <div className="absolute top-2 right-2 md:top-4 md:right-4 bg-black/80 text-white px-3 py-1 md:px-4 md:py-2 rounded-full font-mono text-lg md:text-xl">
-                        {watchTime}s
+                      
+                      {/* HUD Timer Overlay */}
+                      <div className="absolute top-4 right-4 z-20">
+                        <div className="relative flex items-center justify-center h-20 w-20 md:h-24 md:w-24 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-[0_0_20px_rgba(0,0,0,0.5)]">
+                          {/* Circular Progress Ring */}
+                          <svg className="absolute inset-0 -rotate-90 transform h-full w-full">
+                            <circle
+                              cx="50%"
+                              cy="50%"
+                              r="45%"
+                              fill="transparent"
+                              stroke="rgba(255,255,255,0.1)"
+                              strokeWidth="4"
+                            />
+                            <motion.circle
+                              cx="50%"
+                              cy="50%"
+                              r="45%"
+                              fill="transparent"
+                              stroke={watchTime <= 10 ? '#ef4444' : '#ffffff'}
+                              strokeWidth="4"
+                              strokeDasharray="100 100"
+                              initial={{ strokeDashoffset: 100 }}
+                              animate={{ strokeDashoffset: 100 - ((60 - watchTime) / 60) * 100 }}
+                              transition={{ duration: 1, ease: "linear" }}
+                              strokeLinecap="round"
+                              className="drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]"
+                            />
+                          </svg>
+                          
+                          <div className="flex flex-col items-center">
+                            <span className={`text-2xl md:text-3xl font-black font-mono leading-none ${watchTime <= 10 ? 'text-red-500 animate-pulse' : 'text-white'}`}>
+                              {watchTime}
+                            </span>
+                            <span className="text-[8px] md:text-[10px] uppercase font-black text-white/40 tracking-[0.2em] mt-1">
+                              Sec
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Progress Bar Container */}
+                      <div className="absolute bottom-0 left-0 w-full h-1 bg-white/20 z-20">
+                        <motion.div 
+                          className="h-full bg-red-600 shadow-[0_0_10px_rgba(220,38,38,0.5)]"
+                          initial={{ width: '0%' }}
+                          animate={{ width: `${((60 - watchTime) / 60) * 100}%` }}
+                          transition={{ duration: 1, ease: "linear" }}
+                        />
                       </div>
                     </div>
-                    <CardContent className="p-4 md:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-red-50">
+                    <CardContent className="p-4 md:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-muted/30">
                       <div className="text-center sm:text-left">
-                        <h3 className="font-bold text-lg">Watching: {currentVideo.title || 'Community Video'}</h3>
-                        <p className="text-sm text-red-600">Do not close this tab to earn your reward!</p>
+                        <h3 className="font-bold text-lg truncate max-w-[200px] md:max-w-md">Watching: {currentVideo.title || 'Community Video'}</h3>
+                        <p className="text-sm text-muted-foreground">Watching this increases your visibility too!</p>
                       </div>
-                      <Badge className="bg-red-500">Watching</Badge>
+                      <div className="flex items-center gap-3 w-full sm:w-auto">
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="text-muted-foreground w-full sm:w-auto"
+                          onClick={() => {
+                            setIsWatching(false);
+                            setCurrentVideo(null);
+                            setWatchTime(0);
+                            toast.info("Watch session cancelled");
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Badge className="bg-red-500 h-8 px-4 flex items-center justify-center gap-2">
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                          </span>
+                          Watching
+                        </Badge>
+                      </div>
                     </CardContent>
                   </Card>
                 ) : isSubscribing && currentChannel ? (
                   <Card className="overflow-hidden border-none shadow-2xl bg-card">
                     <div className="p-8 md:p-12 text-center space-y-6">
-                      <div className="mx-auto w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center text-red-600 shadow-inner">
+                      <div className={`mx-auto w-24 h-24 rounded-full flex items-center justify-center transition-colors duration-500 ${hasOpenedChannel ? 'bg-green-500/10 text-green-600' : 'bg-red-500/10 text-red-600'} shadow-inner`}>
                         <Youtube size={48} />
                       </div>
                       <div className="space-y-2">
                         <h3 className="text-2xl font-black">Subscribe & Earn</h3>
-                        <p className="text-muted-foreground">Subscribe to this channel to earn <span className="text-yellow-600 font-bold">{userData?.isVip ? '40' : '20'} Coins</span></p>
+                        <p className="text-muted-foreground">Follow the steps to earn <span className="text-yellow-600 font-bold">{userData?.isVip ? '40' : '20'} Coins</span></p>
                       </div>
                       
                       <div className="flex flex-col gap-3 max-w-xs mx-auto">
-                        <Button 
-                          className="h-14 bg-red-600 hover:bg-red-700 text-white font-bold text-lg rounded-2xl shadow-lg shadow-red-600/30"
-                          onClick={() => window.open(currentChannel.videoUrl, '_blank')}
-                        >
-                          1. Open Channel
-                        </Button>
-                        <Button 
-                          variant="outline"
-                          className="h-14 border-2 font-bold text-lg rounded-2xl"
-                          onClick={handleSubscribeComplete}
-                          disabled={isVerifying}
-                        >
-                          {isVerifying ? 'Verifying...' : '2. Confirm Subscription'}
-                        </Button>
+                        {!hasOpenedChannel ? (
+                          <Button 
+                            className="h-14 bg-red-600 hover:bg-red-700 text-white font-bold text-lg rounded-2xl shadow-lg shadow-red-600/30 gap-2"
+                            onClick={() => {
+                              window.open(currentChannel.videoUrl, '_blank');
+                              setHasOpenedChannel(true);
+                              toast.info("Please subscribe to the channel, then return here.");
+                            }}
+                          >
+                            <Youtube size={20} />
+                            Subscribe to Channel
+                          </Button>
+                        ) : (
+                          <Button 
+                            className="h-14 bg-green-600 hover:bg-green-700 text-white font-bold text-lg rounded-2xl shadow-lg shadow-green-600/30 gap-2 animate-in zoom-in-95 duration-300"
+                            onClick={handleSubscribeComplete}
+                            disabled={isVerifying}
+                          >
+                            {isVerifying ? (
+                              <>
+                                <span className="animate-spin h-5 w-5 border-2 border-white/30 border-t-white rounded-full"></span>
+                                Verifying...
+                              </>
+                            ) : (
+                              'Confirm & Claim Coins'
+                            )}
+                          </Button>
+                        )}
+                        
                         <Button 
                           variant="ghost" 
                           className="text-muted-foreground"
-                          onClick={() => { setIsSubscribing(false); setCurrentChannel(null); }}
+                          onClick={() => { 
+                            setIsSubscribing(false); 
+                            setCurrentChannel(null); 
+                            setHasOpenedChannel(false);
+                          }}
                         >
-                          Skip Task
+                          Cancel / Skip Task
                         </Button>
                       </div>
+                      
+                      {hasOpenedChannel && !isVerifying && (
+                        <p className="text-[10px] text-muted-foreground animate-pulse font-bold uppercase tracking-widest">
+                          Waiting for your confirmation...
+                        </p>
+                      )}
                     </div>
                   </Card>
                 ) : (
