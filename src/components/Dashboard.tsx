@@ -486,35 +486,72 @@ export default function Dashboard() {
   };
 
   const setupRecaptcha = () => {
-    if ((window as any).recaptchaVerifier) return (window as any).recaptchaVerifier;
-    
-    (window as any).recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-      'size': 'invisible',
-      'callback': (response: any) => {
-        // reCAPTCHA solved, allow signInWithPhoneNumber.
+    // Correctly clear any previous instances to avoid "already rendered" error
+    if ((window as any).recaptchaVerifier) {
+      try {
+        (window as any).recaptchaVerifier.clear();
+      } catch (e) {
+        console.error("Error clearing recaptcha", e);
       }
-    });
-    return (window as any).recaptchaVerifier;
+      (window as any).recaptchaVerifier = null;
+    }
+    
+    try {
+      (window as any).recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+        'size': 'invisible',
+        'callback': () => {},
+        'expired-callback': () => {
+          if ((window as any).recaptchaVerifier) {
+            (window as any).recaptchaVerifier.clear();
+            (window as any).recaptchaVerifier = null;
+          }
+        }
+      });
+      return (window as any).recaptchaVerifier;
+    } catch (error) {
+      console.error("Recaptcha init error", error);
+      return null;
+    }
   };
 
   const handlePhoneSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!phoneNumber) return;
+    if (!phoneNumber) {
+      toast.error("Please enter a phone number");
+      return;
+    }
 
-    // Basic Indian number format check (common for TubeBoost users)
-    const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+91${phoneNumber}`;
+    // Ensure correct format with + prefix
+    let formattedPhone = phoneNumber.trim();
+    if (!formattedPhone.startsWith('+')) {
+      // Remove leading zero if present for India
+      if (formattedPhone.length === 10) {
+        formattedPhone = `+91${formattedPhone}`;
+      } else if (formattedPhone.length > 10 && !formattedPhone.startsWith('+')) {
+        formattedPhone = `+${formattedPhone}`;
+      } else {
+        toast.error("Invalid phone format. Include country code.");
+        return;
+      }
+    }
     
     setIsSendingOtp(true);
     try {
       const appVerifier = setupRecaptcha();
+      if (!appVerifier) throw new Error("Recaptcha failed to initialize");
+      
       const confirmation = await signInWithPhoneNumber(auth, formattedPhone, appVerifier);
       setConfirmationResult(confirmation);
-      toast.success("OTP sent successfully!");
+      toast.success("OTP sent to " + formattedPhone);
     } catch (error: any) {
-      console.error(error);
-      toast.error(error.message || "Failed to send OTP");
+      console.error("Login Error:", error);
+      let msg = "Failed to send OTP. ";
+      if (error.code === 'auth/invalid-phone-number') msg = "Invalid phone number format.";
+      if (error.code === 'auth/too-many-requests') msg = "Too many attempts. Try later.";
+      toast.error(msg + (error.message || ""));
+      
       if ((window as any).recaptchaVerifier) {
-        (window as any).recaptchaVerifier.clear();
+        try { (window as any).recaptchaVerifier.clear(); } catch(e) {}
         (window as any).recaptchaVerifier = null;
       }
     } finally {
