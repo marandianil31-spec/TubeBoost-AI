@@ -33,8 +33,11 @@ jobs:
 
       - name: Sync Capacitor
         run: |
-          mkdir -p android
           npx cap add android || true
+          # If directory still doesn't exist, try again without || true to see error
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
           npx cap sync android
 
       - name: Build APK
