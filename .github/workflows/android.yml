@@ -33,23 +33,14 @@ jobs:
 
       - name: Sync Capacitor
         run: |
-          npx cap add android || true
-          # If directory still doesn't exist, try again without || true to see error
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
-          npx cap sync android
+          npm install @capacitor/cli@6 @capacitor/core@6 @capacitor/android@6
+          npx cap sync android || (npx cap add android && npx cap sync android)
 
       - name: Build APK
         run: |
-          if [ -d "android" ]; then
-            cd android
-            chmod +x gradlew
-            ./gradlew assembleDebug
-          else
-            echo "Android directory not found!"
-            exit 1
-          fi
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v3
