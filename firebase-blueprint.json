@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with coin balance and VIP status",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "coins": { "type": "number" },
+        "isVip": { "type": "boolean" },
+        "lastDailyReward": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Campaign": {
+      "title": "Campaign",
+      "description": "YouTube video boost campaign",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "videoUrl": { "type": "string" },
+        "videoId": { "type": "string" },
+        "title": { "type": "string" },
+        "targetViews": { "type": "number" },
+        "currentViews": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["creatorId", "videoUrl", "targetViews"]
+    },
+    "ViewLog": {
+      "title": "ViewLog",
+      "description": "Log of a user watching a video",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "campaignId", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile and coins"
+    },
+    "/campaigns/{campaignId}": {
+      "schema": "Campaign",
+      "description": "Video boost campaigns"
+    },
+    "/viewLogs/{logId}": {
+      "schema": "ViewLog",
+      "description": "Tracking views to prevent duplicates"
+    }
+  }
+}

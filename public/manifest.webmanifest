@@ -1,0 +1,17 @@
+{
+  "name": "TubeBoost AI",
+  "short_name": "TubeBoost",
+  "description": "Boost your YouTube channel with real views and subscribers.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ef4444",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/1384/1384060.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
